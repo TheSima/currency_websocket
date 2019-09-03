@@ -3,22 +3,17 @@ import logging
 import time
 import datetime
 import os
-
 import asyncio
+import aiohttp
+import async_timeout
+import websockets
+from aioredis import Redis, create_redis
 from json import JSONDecodeError
 from typing import Callable
 
-import aiohttp
-from aioredis import Redis, create_redis
-
-import async_timeout
-import websockets
-
 DEFAULT_REDIS_URL = 'redis://127.0.0.1:6379/0'
 DEFAULT_QUOTATIONS_URL = 'https://ratesjson.fxcm.com/DataDisplayer'
-QUOTATIONS_GET_PERIOD = 1
-
-
+DEFAULT_QUOTATIONS_GET_PERIOD = 1
 
 
 class Fetcher:
@@ -73,8 +68,8 @@ class RedisQuotationsClient(Redis):
         assets = [a.decode() for a in assets]
         return assets
 
-    async def get_asset(self, id: int):
-        assets = await self.get_assets(id, id)
+    async def get_asset(self, asset_id: int):
+        assets = await self.get_assets(asset_id, asset_id)
         if assets:
             return assets[0]
 
@@ -90,7 +85,7 @@ class RedisQuotationsClient(Redis):
         return await self.lpush(self.ASSETS_LIST, asset_name, *asset_names)
 
     async def publish_asset(self, asset_name, asset_time, asset_value, asset_id):
-        o = {"assetName" : asset_name, "time" : asset_time, "assetId" : asset_id, "value" : asset_value}
+        o = {"assetName": asset_name, "time": asset_time, "assetId": asset_id, "value": asset_value}
         _json = json.dumps(o)
         await self.publish(self.channel_full_name(asset_name), _json)
 
@@ -113,7 +108,8 @@ class QuotationWebSocketProtocol(websockets.WebSocketServerProtocol):
         self.redis_client_coroutine = create_redis(self.redis_url, commands_factory=RedisQuotationsClient)
         self.subscribes = {}
 
-    def build_action_response(self, action_name, action_message):
+    @staticmethod
+    def build_action_response(action_name, action_message):
         return {"action": action_name, "message": action_message}
 
     async def do_action(self, action_dict: dict):
@@ -170,10 +166,8 @@ class QuotationWebSocketProtocol(websockets.WebSocketServerProtocol):
         self.subscribes.clear()
 
 
-
-
-async def ws_handler(websocket: QuotationWebSocketProtocol, path):
-    websocket.redis_client = redis = await websocket.redis_client_coroutine
+async def ws_handler(websocket: QuotationWebSocketProtocol, _):
+    websocket.redis_client = await websocket.redis_client_coroutine
     try:
         async for message in websocket:
             try:
@@ -181,10 +175,10 @@ async def ws_handler(websocket: QuotationWebSocketProtocol, path):
                 resp = await websocket.do_action(action_dict)
                 if resp is not None:
                     await websocket.send(json.dumps(resp))
-            except JSONDecodeError as e:
-                logging.debug(e)
-    except websockets.ConnectionClosedError as e:
-        logging.debug(e)
+            except JSONDecodeError as json_e:
+                logging.debug(json_e)
+    except websockets.ConnectionClosedError as con_e:
+        logging.debug(con_e)
 
 
 async def quotations_collect(url, period, redis_url):
@@ -227,7 +221,7 @@ async def quotations_collect(url, period, redis_url):
 async def main():
     redis_url = os.getenv('REDIS_URL', DEFAULT_REDIS_URL)
     quotations_url = os.getenv('QUOTATIONS_URL', DEFAULT_QUOTATIONS_URL)
-    quotations_period = os.getenv('QUOTATIONS_GET_PERIOD', QUOTATIONS_GET_PERIOD)
+    quotations_period = os.getenv('QUOTATIONS_GET_PERIOD', DEFAULT_QUOTATIONS_GET_PERIOD)
     # redis_quotations = await create_redis(redis_url, commands_factory=RedisQuotationsClient)
     t1 = websockets.serve(ws_handler, '0.0.0.0', 8080, klass=QuotationWebSocketProtocol)
     t2 = quotations_collect(quotations_url, quotations_period, redis_url)
@@ -241,10 +235,7 @@ if __name__ == '__main__':
         logging.basicConfig(level=logging.DEBUG)
     try:
         asyncio.run(main(), debug=is_debug)
-    except Exception:
-        print()
+    except Exception as e:
+        logging.debug(e)
     except KeyboardInterrupt:
         main_loop.close()
-
-
-
