@@ -1,0 +1,5 @@
+aiohttp==3.5.4
+async-timeout==3.0.1
+redis==3.3.8
+websockets==8.0.2
+aioredis==1.2.0
